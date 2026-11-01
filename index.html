@@ -1046,12 +1046,34 @@ function renderTransactions(){
   }).join('');
 }
 
+// Summary of what the member must pay to clear every active loan (principal + interest, as recorded)
+function loanSummaryHtml(myLoans){
+  const t0=today();
+  const act=myLoans.filter(l=>lnBalance(l)>=0.01);
+  if(!act.length)return`<div class="card" style="margin-bottom:12px"><div class="card-body" style="padding:14px;text-align:center"><div style="font-size:22px">✓</div><div style="font-size:13px;font-weight:700;color:var(--green)">All your loans are cleared</div></div></div>`;
+  const total=act.reduce((s,l)=>s+lnBalance(l),0);
+  const prin=act.reduce((s,l)=>s+Math.max(0,l.amount-l.repaid),0);
+  const intr=Math.max(0,total-prin);
+  const od=act.filter(l=>l.dueDate&&l.dueDate<t0);
+  const odBal=od.reduce((s,l)=>s+lnBalance(l),0);
+  const next=act.filter(l=>!(l.dueDate&&l.dueDate<t0)&&l.dueDate).map(l=>l.dueDate).sort()[0];
+  return`<div class="card" style="margin-bottom:12px;border-color:${od.length?'rgba(240,74,106,.45)':'var(--border)'}">
+    <div class="card-hd"><div class="card-title">To clear all loans</div><span class="badge ${od.length?'br':'by'}">${act.length} active</span></div>
+    <div class="card-body" style="padding:14px;">
+      <div style="font-size:26px;font-weight:800;color:${od.length?'var(--red)':'var(--text)'}">${fmtF(total)}</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:8px"><span>Principal remaining</span><span style="color:var(--text)">${fmtF(prin)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px"><span>Interest remaining</span><span style="color:var(--gold)">${fmtF(intr)}</span></div>
+      ${od.length?`<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:4px"><span style="color:var(--red)">Overdue now (${od.length})</span><span style="color:var(--red);font-weight:700">${fmtF(odBal)}</span></div>`:''}
+      ${next?`<div style="font-size:10px;color:var(--muted);margin-top:8px">Next due date: ${next}</div>`:''}
+      <div style="font-size:9px;color:var(--muted);margin-top:8px">Based on the treasurer's last sync. Includes the interest on your loans as recorded.</div>
+    </div></div>`;
+}
 function renderLoans(){
   // Match loans by borrowerMemberId (reliable) or full name match (legacy loans)
   const myLoans=(GD.loans||[]).filter(l=>loanIsMine(l));
   const el=document.getElementById('loan-cards');
   if(!myLoans.length){el.innerHTML='<div class="empty"><div class="empty-icon">⬕</div><div>No loans recorded for you</div></div>';return;}
-  el.innerHTML=myLoans.map(l=>{
+  el.innerHTML=loanSummaryHtml(myLoans)+myLoans.map(l=>{
     const bal=lnBalance(l),tot=lnTotalOwed(l),isPaid=bal<0.01,isOver=!isPaid&&l.dueDate&&l.dueDate<today();
     const sb=isPaid?'bg':isOver?'br':'by',pct=Math.min(100,(l.repaid/tot)*100);
     return`<div class="card">
