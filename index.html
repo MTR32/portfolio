@@ -205,6 +205,7 @@ input:focus{border-color:var(--accent);}
     </div>
     <div class="tb-right">
       <span id="sync-dot" style="font-size:12px;color:var(--muted);cursor:help;" title="Connection status">●</span>
+      <button class="tb-ghost" id="inbox-btn" onclick="openInbox()" title="Messages" style="position:relative;">🔔<span id="inbox-dot" style="display:none;position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;font-size:10px;line-height:16px;text-align:center;font-weight:700;"></span></button>
       <button class="tb-ghost" onclick="showPage('settings-pg')" title="Settings">⊙</button>
       <button class="tb-ghost" onclick="logout()" title="Logout" style="color:var(--red);border-color:rgba(240,74,106,.3);">⏻</button>
     </div>
@@ -423,6 +424,16 @@ input:focus{border-color:var(--accent);}
 </div>
 
 <!-- FIRST LOGIN - SET OWN PIN MODAL -->
+
+<div class="mo" id="modal-inbox">
+  <div class="modal">
+    <div class="mhd"><div class="mtitle">🔔 Messages</div><button class="tb-ghost" onclick="closeModal('modal-inbox')">✕</button></div>
+    <div class="mbody" style="max-height:65vh;overflow-y:auto;">
+      <div id="inbox-list"></div>
+      <div style="padding:10px 0 14px;text-align:center;"><button class="tb-ghost" onclick="inboxClearAll()">Clear all</button></div>
+    </div>
+  </div>
+</div>
 <div class="mo" id="modal-first-pin">
   <div class="modal">
     <div class="mhd"><div class="mtitle">🔐 Set Your Private PIN</div></div>
@@ -628,6 +639,7 @@ function openApp(){
   startLiveSync();
   checkOnline();
   setTimeout(maybeShowPushBar,1500);
+  setTimeout(async()=>{await inboxPurge();updateInboxDot();if(location.hash==='#inbox'){history.replaceState(null,'',location.pathname+location.search);openInbox();}},1200);
   // Detect first login: member has no self-set PIN yet (only the treasurer-assigned one)
   const hasOwnPin=!!localStorage.getItem('igm_pin_'+MY_ID);
   if(!hasOwnPin){
@@ -1234,6 +1246,54 @@ document.getElementById('login-pin').addEventListener('keydown',e=>{if(e.key==='
 (function(){const link=document.createElement('link');link.rel='manifest';link.href='manifest.json';document.head.appendChild(link);})();
 
 
+
+// ════════════════════════════════
+// MESSAGE INBOX (full text of every notification, kept on this phone)
+// ════════════════════════════════
+function inboxDB(){return new Promise((ok,no)=>{const r=indexedDB.open('igm-inbox',1);r.onupgradeneeded=()=>r.result.createObjectStore('msgs',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);});}
+async function inboxAll(){try{const db=await inboxDB();return await new Promise(ok=>{const q=db.transaction('msgs').objectStore('msgs').getAll();q.onsuccess=()=>ok((q.result||[]).sort((a,b)=>b.ts-a.ts));q.onerror=()=>ok([]);});}catch(e){return[];}}
+async function inboxPut(item){try{const db=await inboxDB();await new Promise(ok=>{const t=db.transaction('msgs','readwrite');t.objectStore('msgs').put(item);t.oncomplete=ok;t.onerror=ok;});}catch(e){}}
+async function inboxClearAll(){try{const db=await inboxDB();await new Promise(ok=>{const t=db.transaction('msgs','readwrite');t.objectStore('msgs').clear();t.oncomplete=ok;t.onerror=ok;});}catch(e){}renderInbox();updateInboxDot();}
+function escHtml(x){return String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+async function updateInboxDot(){
+  const d=document.getElementById('inbox-dot');if(!d)return;
+  const n=(await inboxAll()).filter(m=>!m.read).length;
+  d.style.display=n?'block':'none';d.textContent=n>9?'9+':n;
+}
+async function renderInbox(markRead){
+  const el=document.getElementById('inbox-list');if(!el)return;
+  const list=await inboxAll();
+  if(!list.length){el.innerHTML='<div style="padding:24px 0;text-align:center;font-size:12px;color:var(--muted)">No new messages.</div>';return;}
+  el.innerHTML=list.map(m=>`<div style="padding:12px 0;border-top:1px solid var(--border);">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">
+      <div style="font-size:13px;font-weight:700;color:${m.read?'var(--text)':'var(--accent)'}">${escHtml(m.title)}</div>
+      <div style="font-size:10px;color:var(--muted);white-space:nowrap">${new Date(m.ts).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+    </div>
+    <div style="font-size:13px;color:var(--text);margin-top:6px;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${escHtml(m.body)}</div></div>`).join('');
+  if(markRead){for(const m of list){if(!m.read){m.read=true;await inboxPut(m);}}updateInboxDot();}
+}
+async function openInbox(){openModal('modal-inbox');await renderInbox(false);setTimeout(()=>renderInbox(true),1500);}
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message',e=>{
+    const t=e.data&&e.data.type;
+    if(t==='inbox-updated')updateInboxDot();
+    if(t==='open-inbox'&&MY_ID)openInbox();
+  });
+}
+// Messages are not kept: once read (or after 7 days unread) they are deleted when the app is left.
+async function inboxPurge(){
+  try{
+    const db=await inboxDB(),limit=Date.now()-7*864e5;
+    await new Promise(ok=>{
+      const t=db.transaction('msgs','readwrite'),st=t.objectStore('msgs'),q=st.openCursor();
+      q.onsuccess=()=>{const c=q.result;if(!c)return;const m=c.value;if(m.read||m.ts<limit)c.delete();c.continue();};
+      t.oncomplete=ok;t.onerror=ok;t.onabort=ok;
+    });
+  }catch(e){}
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)inboxPurge();else updateInboxDot();});
+window.addEventListener('pagehide',()=>{inboxPurge();});
+
 // ════════════════════════════════
 // PUSH NOTIFICATIONS
 // ════════════════════════════════
@@ -1269,6 +1329,15 @@ async function registerPush(silent){
     const token=await firebase.messaging(fbApp).getToken({vapidKey:VAPID_KEY,serviceWorkerRegistration:reg});
     if(!token)return;
     await fbDB.ref('fcmTokens/'+MY_ID+'/'+token).set({ts:Date.now(),ua:navigator.userAgent.slice(0,80)});
+    if(!window._fgBound){
+      window._fgBound=true;
+      firebase.messaging(fbApp).onMessage(async p=>{
+        const d=p.data||{};const id=Date.now()+'-'+Math.random().toString(36).slice(2,7);
+        await inboxPut({id,title:d.title||'My Portfolio',body:d.body||'',ts:Date.now(),read:false});
+        updateInboxDot();
+        try{reg.showNotification(d.title||'My Portfolio',{body:d.body||'',tag:id,icon:'icon.svg',badge:'icon.svg',data:{url:d.url||'./'}});}catch(e){}
+      });
+    }
     if(!silent)alert('✓ Notifications enabled on this phone.');
   }catch(e){console.warn('Push:',e);if(!silent)alert('Could not enable notifications: '+e.message);}
 }
